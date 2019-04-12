@@ -1,0 +1,27 @@
+[package]
+name = "natsclient"
+version = "0.0.1"
+authors = ["Kevin Hoffman <alothien@gmail.com>"]
+description = "NATS client designed for both an ergonomic API and performance"
+edition = "2018"
+license = "Apache-2.0"
+homepage = "https://github.com/encabulators/natsclient"
+documentation = "https://docs.rs/natsclient"
+repository = "https://github.com/encabulators/natsclient"
+readme = "README.md"
+keywords = ["nats", "client", "natsclient", "async", "stan"]
+categories = ["network-programming", "api-bindings"]
+
+#travis-ci = { repository = "encabulators/natsclient", branch = "master" }
+
+
+[dependencies]
+derive_builder = "^0.7"
+nkeys = "0.0.4"
+url = "1.7"
+rand = "0.6.5"
+nats-types = "0.1.4"
+#nats-types = { path = "../nats-types"} 
+data-encoding = "2.1.2"
+crossbeam-channel = "0.3.8"
+crossbeam = "0.7.1"

@@ -20,8 +20,9 @@ derive_builder = "^0.7"
 nkeys = "0.0.4"
 url = "1.7"
 rand = "0.6.5"
-nats-types = "0.1.4"
-#nats-types = { path = "../nats-types"} 
+#nats-types = "0.1.4"
+nats-types = { path = "../nats-types"} 
 data-encoding = "2.1.2"
 crossbeam-channel = "0.3.8"
 crossbeam = "0.7.1"
+nuid = "0.2.0"

@@ -2,6 +2,7 @@
 #[macro_use]
 extern crate derive_builder;
 use crate::protocol::{ProtocolMessage, ServerInfo};
+use crate::subs::SubscriptionManager;
 use crate::tcp::start_comms;
 use crossbeam_channel as channel;
 use crossbeam_channel::bounded;
@@ -53,10 +54,11 @@ impl ClientOptions {
 #[derive(Clone)]
 struct Client {
     opts: ClientOptions,
-    subscriptions: Arc<RwLock<HashMap<usize, MessageHandler>>>,
+    //subscriptions: Arc<RwLock<HashMap<usize, MessageHandler>>>,
     servers: Vec<ServerInfo>,
     server_index: usize,
-    current_sid: Arc<AtomicUsize>,
+    //current_sid: Arc<AtomicUsize>,
+    submgr: SubscriptionManager,
     delivery_sender: channel::Sender<DeliveredMessage>,
     delivery_receiver: channel::Receiver<DeliveredMessage>,
     write_sender: channel::Sender<ProtocolMessage>,
@@ -71,14 +73,15 @@ impl Client {
 
         Ok(Client {
             opts,
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            //subscriptions: Arc::new(RwLock::new(HashMap::new())),
             servers: protocol::parse_server_uris(uris.as_slice())?,
+            submgr: SubscriptionManager::new(ws.clone()),
             server_index: 0,
             delivery_sender: ds,
             delivery_receiver: dr,
             write_sender: ws,
             write_receiver: wr,
-            current_sid: Arc::new(AtomicUsize::new(1)),
+            //current_sid: Arc::new(AtomicUsize::new(1)),
         })
     }
 
@@ -92,18 +95,21 @@ impl Client {
 
     pub fn subscribe<T, F>(&self, subject: T, handler: F) -> Result<()>
     where
-        T: Into<String> + Clone,
         F: Fn(&Message) -> Result<()> + Sync + Send,
         F: 'static,
+        T: Into<String> + Clone,
     {
-        self.raw_subscribe(subject, None, handler)
+        self.raw_subscribe(subject, None, Arc::new(handler))
     }
 
-    pub fn queue_subscribe<T, F>(&self, subject: T, queue_group: T, handler: F) -> Result<()>
+    pub fn queue_subscribe<T, F>(
+        &self,
+        subject: T,
+        queue_group: T,
+        handler: MessageHandler,
+    ) -> Result<()>
     where
         T: Into<String> + Clone,
-        F: Fn(&Message) -> Result<()> + Sync + Send,
-        F: 'static,
     {
         self.raw_subscribe(subject, Some(queue_group.into()), handler)
     }
@@ -115,15 +121,26 @@ impl Client {
         timeout: std::time::Duration,
     ) -> Result<Message>
     where
-        T: Into<String>,
+        T: AsRef<str>,
     {
-        Ok(Message {
-            payload: vec![],
-            subject: subject.into(),
-            reply_to: Some("reply".to_string()),
-            payload_size: 0,
-            subscription_id: 0,
-        })
+        let (send, recv) = channel::bounded(1);
+        let (inbox, sid) = self.submgr.add_new_inbox_sub(Arc::new(move |msg| {
+            println!("Received reply on inbox: {}", msg);
+            send.send(msg.clone()).unwrap();
+            Ok(())
+        }))?;
+        self.publish(subject.as_ref(), payload, Some(inbox.clone()))?;
+        let res = match recv.recv_timeout(timeout) {
+            Ok(msg) => Ok(msg.clone()),
+            Err(e) => Err(err!(Timeout, "Request timeout expired: {}", e)),
+        };
+        self.submgr.unsubscribe(sid, None)?;
+        res
+    }
+
+    pub fn unsubscribe(&self, subject: impl AsRef<str>) -> Result<()> {
+        let s = subject.as_ref();
+        self.submgr.unsubscribe_by_subject(s)
     }
 
     pub fn publish(&self, subject: &str, payload: &[u8], reply_to: Option<String>) -> Result<()> {
@@ -184,36 +201,18 @@ impl Client {
     }
 
     fn get_handler(&self, sid: usize) -> MessageHandler {
-        let handlers = self.subscriptions.read().unwrap();
-        handlers[&sid].clone()
+        self.submgr.handler_for_sid(sid).unwrap()
     }
 
-    fn raw_subscribe<T: Into<String> + Clone, F>(
+    fn raw_subscribe<T: Into<String> + Clone>(
         &self,
         subject: T,
         queue_group: Option<String>,
-        handler: F,
-    ) -> Result<()>
-    where
-        F: Fn(&Message) -> Result<()> + Sync + Send,
-        F: 'static,
-    {
-        let s = subject.into();
-        let sid = {
-            let mut subs = self.subscriptions.write().unwrap();
-            let sid = self.current_sid.fetch_add(1, Ordering::Relaxed);
-            subs.insert(sid, Arc::new(handler));
-            sid
-        };
-        match self
-            .write_sender
-            .send(ProtocolMessage::Subscribe(SubscribeMessage {
-                queue_group: queue_group,
-                subject: s,
-                subscription_id: sid,
-            })) {
+        handler: MessageHandler,
+    ) -> Result<()> {
+        match self.submgr.add_sub(subject, queue_group, handler) {
             Ok(_) => Ok(()),
-            Err(e) => Err(err!(ConcurrencyFailure, "Concurrency failure: {}", e)),
+            Err(e) => Err(err!(SubscriptionFailure, "Subscription failure: {}", e)),
         }
     }
 }
@@ -221,6 +220,7 @@ impl Client {
 #[macro_use]
 pub mod error;
 mod protocol;
+mod subs;
 mod tcp;
 
 #[cfg(test)]
@@ -273,11 +273,15 @@ mod tests {
             Ok(())
         })?;
 
-        let msg = client.request("ping", b"PING", Duration::from_millis(300))?;
+        let msg = client.request(
+            "usage",
+            r#"{"customer_id": 34}"#.as_bytes(),
+            Duration::from_millis(300),
+        )?;
         println!("Response from request: {}", msg);
 
-        let res = client.publish("usage", r#"{"customer_id": "12"}"#.as_bytes(), None);
-        assert!(res.is_ok());
+        //let res = client.publish("usage", r#"{"customer_id": "12"}"#.as_bytes(), None);
+        //assert!(res.is_ok());
 
         std::thread::sleep(Duration::from_secs(200));
 

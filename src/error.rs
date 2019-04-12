@@ -36,6 +36,10 @@ pub enum ErrorKind {
     IOError,
     /// Concurrency Failure
     ConcurrencyFailure,
+    /// Subscription Failure
+    SubscriptionFailure,
+    // Timeout expired
+    Timeout,
 }
 
 /// A handy macro borrowed from the `signatory` crate that lets library-internal code generate
@@ -61,6 +65,8 @@ impl ErrorKind {
             ErrorKind::InvalidClientConfig => "Invalid client configuration",
             ErrorKind::IOError => "I/O failure",
             ErrorKind::ConcurrencyFailure => "Concurrency Failure",
+            ErrorKind::SubscriptionFailure => "Subscription Failure",
+            ErrorKind::Timeout => "Timeout expired",
         }
     }
 }
@@ -112,6 +118,12 @@ impl From<(ErrorKind, &'static str)> for Error {
 impl From<crossbeam_channel::SendError<ProtocolMessage>> for Error {
     fn from(source: crossbeam_channel::SendError<ProtocolMessage>) -> Error {
         err!(ConcurrencyFailure, "Concurrency error: {}", source)
+    }
+}
+
+impl From<crossbeam_channel::RecvTimeoutError> for Error {
+    fn from(source: crossbeam_channel::RecvTimeoutError) -> Error {
+        err!(Timeout, "Timeout expired: {}", source)
     }
 }
 

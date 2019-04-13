@@ -1,5 +1,6 @@
 use crate::{Message, ProtocolMessage, Result};
 use crossbeam_channel as channel;
+use crossbeam_channel::Sender;
 use nats_types::{SubscribeMessage, UnsubscribeMessage};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +20,7 @@ pub(crate) struct Subscription {
 #[derive(Clone)]
 pub(crate) struct SubscriptionManager {
     subs: Arc<RwLock<HashMap<usize, Subscription>>>,
+    inboxes: Arc<RwLock<HashMap<String, Sender<Message>>>>,
     sender: channel::Sender<ProtocolMessage>,
     current_sid: Arc<AtomicUsize>,
 }
@@ -29,15 +31,27 @@ impl SubscriptionManager {
             subs: Arc::new(RwLock::new(HashMap::new())),
             sender,
             current_sid: Arc::new(AtomicUsize::new(1)),
+            inboxes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn add_new_inbox_sub(&self, handler: MessageHandler) -> Result<(String, usize)> {
+    pub fn add_new_inbox_sub(&self, sender: Sender<Message>) -> Result<String> {
         let subject = new_inbox();
-        match self.add_sub(subject.clone(), None, handler) {
-            Ok(sid) => Ok((subject, sid)),
-            Err(e) => Err(err!(SubscriptionFailure, "Subscription failure: {}", e)),
-        }
+        let mut inboxes = self.inboxes.write().unwrap();
+        inboxes.insert(subject.clone(), sender);
+
+        Ok(subject)
+    }
+
+    pub fn sender_for_inbox(&self, inbox: &str) -> Sender<Message> {
+        let inboxes = self.inboxes.read().unwrap();
+        let sender = &inboxes[inbox];
+        sender.clone()
+    }
+
+    pub fn remove_inbox(&self, inbox: &str) {
+        let mut inboxes = self.inboxes.write().unwrap();
+        inboxes.remove(inbox);
     }
 
     pub fn add_sub(
@@ -151,38 +165,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn remove_subscription_for_inbox() {
-        // Mimic request behavior by subscribing to an inbox and unsubscribing
-        // from the inbox name instead of the sid.
-        let (sender, r) = channel::unbounded();
-
-        let sm = SubscriptionManager::new(sender);
-
-        let (inbox, sid) = sm.add_new_inbox_sub(Arc::new(msg_handler)).unwrap();
-
-        let submsg = r.recv().unwrap(); // the outbound SUB message
-        assert_eq!(
-            submsg,
-            ProtocolMessage::Subscribe(SubscribeMessage {
-                queue_group: None,
-                subject: inbox.clone(),
-                subscription_id: sid,
-            })
-        );
-        let unsub = sm.unsubscribe_by_subject(&inbox);
-        let unsubmsg = r.recv().unwrap(); // outbound UNSUB message
-        assert_eq!(
-            unsubmsg,
-            ProtocolMessage::Unsubscribe(UnsubscribeMessage {
-                max_messages: None,
-                subscription_id: sid,
-            })
-        );
-        assert!(unsub.is_ok());
-    }
-
-    fn msg_handler(msg: &Message) -> super::Result<()> {
+    fn msg_handler(_msg: &Message) -> super::Result<()> {
         Ok(())
     }
 }

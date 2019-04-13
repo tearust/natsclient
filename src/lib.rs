@@ -8,14 +8,10 @@ use crossbeam_channel as channel;
 use crossbeam_channel::bounded;
 use nats_types::DeliveredMessage;
 use nats_types::PublishMessage;
-use nats_types::SubscribeMessage;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::thread;
 
-type Result<T> = std::result::Result<T, crate::error::Error>;
+pub type Result<T> = std::result::Result<T, crate::error::Error>;
 
 pub use nats_types::DeliveredMessage as Message;
 
@@ -52,12 +48,10 @@ impl ClientOptions {
 }
 
 #[derive(Clone)]
-struct Client {
+pub struct Client {
     opts: ClientOptions,
-    //subscriptions: Arc<RwLock<HashMap<usize, MessageHandler>>>,
     servers: Vec<ServerInfo>,
     server_index: usize,
-    //current_sid: Arc<AtomicUsize>,
     submgr: SubscriptionManager,
     delivery_sender: channel::Sender<DeliveredMessage>,
     delivery_receiver: channel::Receiver<DeliveredMessage>,
@@ -73,7 +67,6 @@ impl Client {
 
         Ok(Client {
             opts,
-            //subscriptions: Arc::new(RwLock::new(HashMap::new())),
             servers: protocol::parse_server_uris(uris.as_slice())?,
             submgr: SubscriptionManager::new(ws.clone()),
             server_index: 0,
@@ -81,7 +74,6 @@ impl Client {
             delivery_receiver: dr,
             write_sender: ws,
             write_receiver: wr,
-            //current_sid: Arc::new(AtomicUsize::new(1)),
         })
     }
 
@@ -102,16 +94,13 @@ impl Client {
         self.raw_subscribe(subject, None, Arc::new(handler))
     }
 
-    pub fn queue_subscribe<T, F>(
-        &self,
-        subject: T,
-        queue_group: T,
-        handler: MessageHandler,
-    ) -> Result<()>
+    pub fn queue_subscribe<T, F>(&self, subject: T, queue_group: T, handler: F) -> Result<()>
     where
+        F: Fn(&Message) -> Result<()> + Sync + Send,
+        F: 'static,
         T: Into<String> + Clone,
     {
-        self.raw_subscribe(subject, Some(queue_group.into()), handler)
+        self.raw_subscribe(subject, Some(queue_group.into()), Arc::new(handler))
     }
 
     pub fn request<T>(
@@ -123,18 +112,13 @@ impl Client {
     where
         T: AsRef<str>,
     {
-        let (send, recv) = channel::bounded(1);
-        let (inbox, sid) = self.submgr.add_new_inbox_sub(Arc::new(move |msg| {
-            println!("Received reply on inbox: {}", msg);
-            send.send(msg.clone()).unwrap();
-            Ok(())
-        }))?;
+        let (sender, receiver) = channel::bounded(1);
+        let inbox = self.submgr.add_new_inbox_sub(sender)?;
         self.publish(subject.as_ref(), payload, Some(inbox.clone()))?;
-        let res = match recv.recv_timeout(timeout) {
+        let res = match receiver.recv_timeout(timeout) {
             Ok(msg) => Ok(msg.clone()),
             Err(e) => Err(err!(Timeout, "Request timeout expired: {}", e)),
         };
-        self.submgr.unsubscribe(sid, None)?;
         res
     }
 
@@ -175,6 +159,18 @@ impl Client {
         )?;
         r.recv_timeout(std::time::Duration::from_millis(30))
             .unwrap(); // TODO: handle "no connection sent within 30ms"
+
+        let mgr = self.submgr.clone();
+        self.submgr.add_sub(
+            "_INBOX.>",
+            None,
+            Arc::new(move |msg| {
+                let sender = mgr.sender_for_inbox(&msg.subject);
+                sender.send(msg.clone());
+                mgr.remove_inbox(&msg.subject);
+                Ok(())
+            }),
+        );
         self.start_subscription_dispatcher(self.delivery_receiver.clone())
     }
 

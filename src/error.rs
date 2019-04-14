@@ -8,6 +8,7 @@
 #![allow(unused_macros)]
 
 use core::fmt;
+use nats_types::DeliveredMessage;
 use nats_types::ProtocolMessage;
 
 use std::{
@@ -117,6 +118,12 @@ impl From<(ErrorKind, &'static str)> for Error {
 
 impl From<crossbeam_channel::SendError<ProtocolMessage>> for Error {
     fn from(source: crossbeam_channel::SendError<ProtocolMessage>) -> Error {
+        err!(ConcurrencyFailure, "Concurrency error: {}", source)
+    }
+}
+
+impl From<crossbeam_channel::SendError<DeliveredMessage>> for Error {
+    fn from(source: crossbeam_channel::SendError<DeliveredMessage>) -> Error {
         err!(ConcurrencyFailure, "Concurrency error: {}", source)
     }
 }

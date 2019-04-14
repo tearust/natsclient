@@ -15,16 +15,23 @@ pub type Result<T> = std::result::Result<T, crate::error::Error>;
 
 pub use nats_types::DeliveredMessage as Message;
 
+/// Indicates the type of client authentication used by the NATS client
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthenticationStyle {
+    /// JSON Web Token (JWT)-based authentication using a JWT and a seed (private) key
     UserCredentials(String, String),
+    /// Single token based authentication
     Token(String),
+    /// Basic authentication with username and password
     Basic { username: String, password: String },
+    /// Anonymous (unauthenticated)
     Anonymous,
 }
 
 type MessageHandler = Arc<Fn(&Message) -> Result<()> + Sync + Send>;
 
+/// Options to configure the NATS client. A builder is available so a fluent
+/// API can be used to set options
 #[derive(Debug, Clone, Builder, PartialEq)]
 #[builder(setter(into), default)]
 pub struct ClientOptions {
@@ -42,11 +49,15 @@ impl Default for ClientOptions {
 }
 
 impl ClientOptions {
+    /// Create a new Client Options Builder
     pub fn builder() -> ClientOptionsBuilder {
         ClientOptionsBuilder::default()
     }
 }
 
+/// The main entry point for your application to consume NATS services. This client
+/// manages connections, connection retries, adjusts to new servers as they enter the
+/// cluster, and much more.
 #[derive(Clone)]
 pub struct Client {
     opts: ClientOptions,
@@ -60,6 +71,8 @@ pub struct Client {
 }
 
 impl Client {
+    /// Creates a new client from a set of options, which can be created directly
+    /// or through a `ClientOptionsBuilder`
     pub fn from_options(opts: ClientOptions) -> Result<Client> {
         let uris = opts.cluster_uris.clone();
         let (ds, dr) = channel::unbounded();
@@ -67,7 +80,7 @@ impl Client {
 
         Ok(Client {
             opts,
-            servers: protocol::parse_server_uris(uris.as_slice())?,
+            servers: protocol::parse_server_uris(&uris)?,
             submgr: SubscriptionManager::new(ws.clone()),
             server_index: 0,
             delivery_sender: ds,
@@ -77,6 +90,9 @@ impl Client {
         })
     }
 
+    /// Creates a new client using the default options. A client created this way will
+    /// attempt to establish an anonymous connection with a local NATS server running at
+    /// 0.0.0.0:4222
     pub fn new() -> Result<Client> {
         let opts = ClientOptions::builder()
             .cluster_uris(vec!["nats://0.0.0.0:4222".into()])
@@ -85,6 +101,9 @@ impl Client {
         Self::from_options(opts)
     }
 
+    /// Creates a subscription to a new subject. The subject can be a specfic subject
+    /// or a wildcard. The handler supplied will be given a reference to delivered messages
+    /// as they arrive, and can return a Result to indicate processing failure
     pub fn subscribe<T, F>(&self, subject: T, handler: F) -> Result<()>
     where
         F: Fn(&Message) -> Result<()> + Sync + Send,
@@ -94,6 +113,9 @@ impl Client {
         self.raw_subscribe(subject, None, Arc::new(handler))
     }
 
+    /// Creates a subscription for a queue group, allowing message delivery to be spread
+    /// round-robin style across all clients expressing interest in that subject. For more information on how queue groups work,
+    /// consult the NATS documentation.
     pub fn queue_subscribe<T, F>(&self, subject: T, queue_group: T, handler: F) -> Result<()>
     where
         F: Fn(&Message) -> Result<()> + Sync + Send,
@@ -103,6 +125,9 @@ impl Client {
         self.raw_subscribe(subject, Some(queue_group.into()), Arc::new(handler))
     }
 
+    /// Perform a synchronous request by publishing a message on the given subject and waiting
+    /// an expiration period indicated by the `timeout` parameter. If the timeout expires before
+    /// a reply arrives on the inbox subject, an `Err` result will be returned.
     pub fn request<T>(
         &self,
         subject: T,
@@ -122,11 +147,15 @@ impl Client {
         res
     }
 
+    /// Unsubscribe from a subject or wildcard
     pub fn unsubscribe(&self, subject: impl AsRef<str>) -> Result<()> {
         let s = subject.as_ref();
         self.submgr.unsubscribe_by_subject(s)
     }
 
+    /// Asynchronously publish a message. This is a fire-and-forget style message and an `Ok`
+    /// result here does not imply that interested parties have received the message, only that
+    /// the message was successfully sent to NATS.
     pub fn publish(&self, subject: &str, payload: &[u8], reply_to: Option<String>) -> Result<()> {
         let pm = ProtocolMessage::Publish(PublishMessage {
             payload: payload.to_vec(),
@@ -140,6 +169,7 @@ impl Client {
         }
     }
 
+    /// Connect a client to the NATS server(s) indicated by previously supplied configuration
     pub fn connect(&self) -> Result<()> {
         let (host, port) = {
             let server_info = &self.servers[self.server_index];
@@ -166,11 +196,11 @@ impl Client {
             None,
             Arc::new(move |msg| {
                 let sender = mgr.sender_for_inbox(&msg.subject);
-                sender.send(msg.clone());
+                sender.send(msg.clone())?;
                 mgr.remove_inbox(&msg.subject);
                 Ok(())
             }),
-        );
+        )?;
         self.start_subscription_dispatcher(self.delivery_receiver.clone())
     }
 

@@ -64,7 +64,7 @@ pub(crate) fn generate_connect_command(
             let kp = KeyPair::from_seed(seed.as_ref()).unwrap();
             let nonce = server_info.nonce.clone().unwrap();
             let sigbytes = kp.sign(nonce.as_bytes()).unwrap();
-            let sig = Some(data_encoding::BASE64URL_NOPAD.encode(sigbytes.as_slice()));
+            let sig = Some(data_encoding::BASE64URL_NOPAD.encode(&sigbytes));
 
             let ci = crate::protocol::ConnectionInformation::new(
                 false,
@@ -113,16 +113,15 @@ impl ProtocolHandler {
     ) -> Result<()> {
         println!("Received server message: {}", pm);
         match pm {
-            ProtocolMessage::Info(server_info) => {
-                sender
-                    .send(generate_connect_command(pm, &self.opts.authentication))
-                    .unwrap();
+            ProtocolMessage::Info(_server_info) => {
+                // TODO: update server information in response to this
+                sender.send(generate_connect_command(pm, &self.opts.authentication))?; // TODO: only send this once
             }
             ProtocolMessage::Ping => {
-                sender.send(ProtocolMessage::Pong).unwrap();
+                sender.send(ProtocolMessage::Pong)?;
             }
             ProtocolMessage::Message(msg) => {
-                self.delivery_sender.send(msg.clone());
+                self.delivery_sender.send(msg.clone())?;
             }
             _ => {}
         };

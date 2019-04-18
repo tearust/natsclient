@@ -3,9 +3,7 @@ use crate::{AuthenticationStyle, Result};
 use crossbeam_channel as channel;
 use nats_types::DeliveredMessage;
 use nkeys::KeyPair;
-use rand;
-use rand::{seq::SliceRandom, thread_rng};
-use std::sync::mpsc::Sender;
+use rand::{self, seq::SliceRandom, thread_rng};
 use url::Url;
 
 pub use nats_types::{ConnectionInformation, ProtocolMessage};
@@ -109,16 +107,16 @@ impl ProtocolHandler {
     pub fn handle_protocol_message(
         &self,
         pm: &ProtocolMessage,
-        sender: &channel::Sender<ProtocolMessage>,
+        sender: &channel::Sender<Vec<u8>>,
     ) -> Result<()> {
-        println!("Received server message: {}", pm);
+        trace!("RECV: {}", pm);
         match pm {
             ProtocolMessage::Info(_server_info) => {
-                // TODO: update server information in response to this
-                sender.send(generate_connect_command(pm, &self.opts.authentication))?; // TODO: only send this once
+                let conn = generate_connect_command(pm, &self.opts.authentication);
+                sender.send(conn.to_string().into_bytes())?;
             }
             ProtocolMessage::Ping => {
-                sender.send(ProtocolMessage::Pong)?;
+                sender.send(ProtocolMessage::Pong.to_string().into_bytes())?;
             }
             ProtocolMessage::Message(msg) => {
                 self.delivery_sender.send(msg.clone())?;

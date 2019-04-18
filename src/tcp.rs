@@ -1,9 +1,8 @@
 use crate::protocol::is_multiline_message;
-use crate::protocol::{generate_connect_command, ProtocolHandler, ProtocolMessage};
+use crate::protocol::{ProtocolHandler, ProtocolMessage};
 
 use crate::ClientOptions;
 use crate::Result;
-use crossbeam::sync::WaitGroup;
 use crossbeam_channel as channel;
 use nats_types::DeliveredMessage;
 use std::{
@@ -17,8 +16,8 @@ pub(crate) fn start_comms(
     host: &str,
     port: u16,
     delivery_sender: channel::Sender<DeliveredMessage>,
-    write_sender: channel::Sender<ProtocolMessage>,
-    write_receiver: channel::Receiver<ProtocolMessage>,
+    write_sender: channel::Sender<Vec<u8>>,
+    write_receiver: channel::Receiver<Vec<u8>>,
     opts: ClientOptions,
     s: crossbeam_channel::Sender<bool>,
 ) -> Result<()> {
@@ -42,7 +41,7 @@ pub(crate) fn start_comms(
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    println!("ERR: {}", e);
+                    error!("Error receiving data: {}", e);
                 }
             }
             line.clear();
@@ -50,34 +49,28 @@ pub(crate) fn start_comms(
     });
 
     thread::spawn(move || loop {
-        let pmsg = write_receiver.recv().unwrap();
-        println!("SENDING: '{}'", pmsg.to_string());
-        match stream_writer.write_all(pmsg.to_string().as_bytes()) {
+        let vec = write_receiver.recv().unwrap();
+        match stream_writer.write_all(&vec) {
             Ok(_) => {
-                if let ProtocolMessage::Connect(_) = pmsg {
-                    s.send(true);
+                trace!("SEND {} bytes", vec.len());
+                if starts_with(&vec, b"CONNECT") {
+                    s.send(true).unwrap();
                 }
             }
-            Err(e) => println!("failed to write buffer: {}", e),
+            Err(e) => error!("Failed to write buffer: {}", e),
         };
     });
 
     Ok(())
 }
 
-/*
-
-
-        println!("RECEIVED: {}", line);
-        if line.starts_with("INFO") {
-            let info = ProtocolMessage::from_str(line.as_ref()).unwrap();
-            let pm = generate_connect_command(&info, &auth);
-            write_sender.send(pm).unwrap(); // TODO: kill unwrap
-        }
-    }
-    Ok(_) => {}
-    Err(e) => {
-        println!("ERR: {}", e);
+fn starts_with(haystack: &[u8], needle: &[u8]) -> bool {
+    let pos = haystack
+        .windows(needle.len())
+        .position(|window| window == needle);
+    if let Some(p) = pos {
+        p == 0
+    } else {
+        false
     }
 }
-line.clear(); */

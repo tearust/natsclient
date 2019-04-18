@@ -9,7 +9,6 @@
 
 use core::fmt;
 use nats_types::DeliveredMessage;
-use nats_types::ProtocolMessage;
 
 use std::{
     error::Error as StdError,
@@ -39,8 +38,10 @@ pub enum ErrorKind {
     ConcurrencyFailure,
     /// Subscription Failure
     SubscriptionFailure,
-    // Timeout expired
+    /// Timeout expired
     Timeout,
+    /// Miscellaneous
+    Miscellaneous,
 }
 
 /// A handy macro borrowed from the `signatory` crate that lets library-internal code generate
@@ -68,6 +69,7 @@ impl ErrorKind {
             ErrorKind::ConcurrencyFailure => "Concurrency Failure",
             ErrorKind::SubscriptionFailure => "Subscription Failure",
             ErrorKind::Timeout => "Timeout expired",
+            ErrorKind::Miscellaneous => "Miscellaneous error",
         }
     }
 }
@@ -116,8 +118,14 @@ impl From<(ErrorKind, &'static str)> for Error {
     }
 }
 
-impl From<crossbeam_channel::SendError<ProtocolMessage>> for Error {
-    fn from(source: crossbeam_channel::SendError<ProtocolMessage>) -> Error {
+impl From<Box<dyn std::error::Error>> for Error {
+    fn from(source: Box<dyn std::error::Error>) -> Error {
+        err!(Miscellaneous, "Misc error: {}", source)
+    }
+}
+
+impl From<crossbeam_channel::SendError<Vec<u8>>> for Error {
+    fn from(source: crossbeam_channel::SendError<Vec<u8>>) -> Error {
         err!(ConcurrencyFailure, "Concurrency error: {}", source)
     }
 }

@@ -1,4 +1,4 @@
-use crate::{Message, ProtocolMessage, Result};
+use crate::{Message, Result};
 use crossbeam_channel as channel;
 use crossbeam_channel::Sender;
 use nats_types::{SubscribeMessage, UnsubscribeMessage};
@@ -19,15 +19,17 @@ pub(crate) struct Subscription {
 
 #[derive(Clone)]
 pub(crate) struct SubscriptionManager {
+    client_id: String,
     subs: Arc<RwLock<HashMap<usize, Subscription>>>,
     inboxes: Arc<RwLock<HashMap<String, Sender<Message>>>>,
-    sender: channel::Sender<ProtocolMessage>,
+    sender: channel::Sender<Vec<u8>>,
     current_sid: Arc<AtomicUsize>,
 }
 
 impl SubscriptionManager {
-    pub fn new(sender: channel::Sender<ProtocolMessage>) -> SubscriptionManager {
+    pub fn new(client_id: String, sender: channel::Sender<Vec<u8>>) -> SubscriptionManager {
         SubscriptionManager {
+            client_id,
             subs: Arc::new(RwLock::new(HashMap::new())),
             sender,
             current_sid: Arc::new(AtomicUsize::new(1)),
@@ -36,17 +38,21 @@ impl SubscriptionManager {
     }
 
     pub fn add_new_inbox_sub(&self, sender: Sender<Message>) -> Result<String> {
-        let subject = new_inbox();
+        let subject = new_inbox(&self.client_id);
         let mut inboxes = self.inboxes.write().unwrap();
         inboxes.insert(subject.clone(), sender);
 
         Ok(subject)
     }
 
-    pub fn sender_for_inbox(&self, inbox: &str) -> Sender<Message> {
+    pub fn sender_for_inbox(&self, inbox: &str) -> Option<Sender<Message>> {
         let inboxes = self.inboxes.read().unwrap();
-        let sender = &inboxes[inbox];
-        sender.clone()
+        if inboxes.contains_key(inbox) {
+            let sender = &inboxes[inbox];
+            Some(sender.clone())
+        } else {
+            None
+        }
     }
 
     pub fn remove_inbox(&self, inbox: &str) {
@@ -56,24 +62,19 @@ impl SubscriptionManager {
 
     pub fn add_sub(
         &self,
-        subject: impl Into<String>,
-        queue_group: Option<String>,
+        subject: &str,
+        queue_group: Option<&str>,
         handler: MessageHandler,
     ) -> Result<usize> {
         let mut subs = self.subs.write().unwrap();
-        let subject: String = subject.into();
         let sid = self.next_sid();
-        self.sender
-            .send(ProtocolMessage::Subscribe(SubscribeMessage {
-                queue_group,
-                subject: subject.clone(),
-                subscription_id: sid,
-            }))?;
+        let vec = SubscribeMessage::as_vec(subject, queue_group, sid)?;
+        self.sender.send(vec)?;
         subs.insert(
             sid,
             Subscription {
                 id: sid,
-                subject: subject,
+                subject: subject.to_string(),
                 handler: handler,
             },
         );
@@ -82,11 +83,8 @@ impl SubscriptionManager {
 
     pub fn unsubscribe(&self, sid: usize, max_msgs: Option<usize>) -> Result<()> {
         let mut subs = self.subs.write().unwrap();
-        self.sender
-            .send(ProtocolMessage::Unsubscribe(UnsubscribeMessage {
-                subscription_id: sid,
-                max_messages: max_msgs,
-            }))?;
+        let vec = UnsubscribeMessage::as_vec(sid, max_msgs)?;
+        self.sender.send(vec)?;
         subs.remove(&sid);
         Ok(())
     }
@@ -116,8 +114,8 @@ impl SubscriptionManager {
     }
 }
 
-fn new_inbox() -> String {
-    format!("{}{}", INBOX_PREFIX, nuid::next())
+fn new_inbox(client_id: &str) -> String {
+    format!("{}{}.{}", INBOX_PREFIX, client_id, nuid::next()) // _INBOX.(nuid).(nuid)
 }
 
 #[cfg(test)]
@@ -132,17 +130,19 @@ mod tests {
     fn add_subscription_sends_sub_message() {
         let (sender, r) = channel::unbounded();
 
-        let sm = SubscriptionManager::new(sender);
+        let sm = SubscriptionManager::new("test".to_string(), sender);
 
         sm.add_sub("test", None, Arc::new(msg_handler)).unwrap();
         let sub_message = r.recv().unwrap();
+
         assert_eq!(
-            sub_message,
+            String::from_utf8(sub_message).unwrap(),
             ProtocolMessage::Subscribe(SubscribeMessage {
                 queue_group: None,
                 subject: "test".to_string(),
                 subscription_id: 1,
             })
+            .to_string()
         );
     }
 
@@ -150,18 +150,19 @@ mod tests {
     fn remove_subscription_sends_unsub_message() {
         let (sender, r) = channel::unbounded();
 
-        let sm = SubscriptionManager::new(sender);
+        let sm = SubscriptionManager::new("test".to_string(), sender);
 
         let sid = sm.add_sub("test", None, Arc::new(msg_handler)).unwrap();
         let _ = r.recv().unwrap();
         sm.unsubscribe(sid, None).unwrap();
         let unsub_message = r.recv().unwrap();
         assert_eq!(
-            unsub_message,
+            String::from_utf8(unsub_message).unwrap(),
             ProtocolMessage::Unsubscribe(UnsubscribeMessage {
                 max_messages: None,
                 subscription_id: sid,
             })
+            .to_string()
         );
     }
 

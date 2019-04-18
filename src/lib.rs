@@ -1,15 +1,16 @@
 #![allow(dead_code)]
 #[macro_use]
 extern crate derive_builder;
-use crate::protocol::{ProtocolMessage, ServerInfo};
+
+#[macro_use]
+extern crate log;
+
+use crate::protocol::ServerInfo;
 use crate::subs::SubscriptionManager;
 use crate::tcp::start_comms;
-use crossbeam_channel as channel;
-use crossbeam_channel::bounded;
-use nats_types::DeliveredMessage;
-use nats_types::PublishMessage;
-use std::sync::Arc;
-use std::thread;
+use crossbeam_channel::{self as channel, bounded};
+use nats_types::{DeliveredMessage, PublishMessage};
+use std::{sync::Arc, thread, time::Duration};
 
 pub type Result<T> = std::result::Result<T, crate::error::Error>;
 
@@ -60,14 +61,16 @@ impl ClientOptions {
 /// cluster, and much more.
 #[derive(Clone)]
 pub struct Client {
+    id: String,
+    inbox_wildcard: String,
     opts: ClientOptions,
     servers: Vec<ServerInfo>,
     server_index: usize,
     submgr: SubscriptionManager,
     delivery_sender: channel::Sender<DeliveredMessage>,
     delivery_receiver: channel::Receiver<DeliveredMessage>,
-    write_sender: channel::Sender<ProtocolMessage>,
-    write_receiver: channel::Receiver<ProtocolMessage>,
+    write_sender: channel::Sender<Vec<u8>>,
+    write_receiver: channel::Receiver<Vec<u8>>,
 }
 
 impl Client {
@@ -78,10 +81,17 @@ impl Client {
         let (ds, dr) = channel::unbounded();
         let (ws, wr) = channel::unbounded();
 
+        let mut nuid = nuid::NUID::new();
+        nuid.randomize_prefix();
+
+        let id = nuid.next();
+
         Ok(Client {
+            inbox_wildcard: format!("_INBOX.{}.*", &id),
+            id: id.clone(),
             opts,
             servers: protocol::parse_server_uris(&uris)?,
-            submgr: SubscriptionManager::new(ws.clone()),
+            submgr: SubscriptionManager::new(id, ws.clone()),
             server_index: 0,
             delivery_sender: ds,
             delivery_receiver: dr,
@@ -90,12 +100,11 @@ impl Client {
         })
     }
 
-    /// Creates a new client using the default options. A client created this way will
-    /// attempt to establish an anonymous connection with a local NATS server running at
-    /// 0.0.0.0:4222
-    pub fn new() -> Result<Client> {
+    /// Creates a new client using the default options and the given URL. A client created this way will
+    /// attempt to establish an anonymous connection with the given NATS server
+    pub fn new(url: &str) -> Result<Client> {
         let opts = ClientOptions::builder()
-            .cluster_uris(vec!["nats://0.0.0.0:4222".into()])
+            .cluster_uris(vec![url.into()])
             .build()
             .unwrap();
         Self::from_options(opts)
@@ -104,11 +113,10 @@ impl Client {
     /// Creates a subscription to a new subject. The subject can be a specfic subject
     /// or a wildcard. The handler supplied will be given a reference to delivered messages
     /// as they arrive, and can return a Result to indicate processing failure
-    pub fn subscribe<T, F>(&self, subject: T, handler: F) -> Result<()>
+    pub fn subscribe<F>(&self, subject: &str, handler: F) -> Result<()>
     where
         F: Fn(&Message) -> Result<()> + Sync + Send,
         F: 'static,
-        T: Into<String> + Clone,
     {
         self.raw_subscribe(subject, None, Arc::new(handler))
     }
@@ -116,11 +124,10 @@ impl Client {
     /// Creates a subscription for a queue group, allowing message delivery to be spread
     /// round-robin style across all clients expressing interest in that subject. For more information on how queue groups work,
     /// consult the NATS documentation.
-    pub fn queue_subscribe<T, F>(&self, subject: T, queue_group: T, handler: F) -> Result<()>
+    pub fn queue_subscribe<F>(&self, subject: &str, queue_group: &str, handler: F) -> Result<()>
     where
         F: Fn(&Message) -> Result<()> + Sync + Send,
         F: 'static,
-        T: Into<String> + Clone,
     {
         self.raw_subscribe(subject, Some(queue_group.into()), Arc::new(handler))
     }
@@ -139,7 +146,7 @@ impl Client {
     {
         let (sender, receiver) = channel::bounded(1);
         let inbox = self.submgr.add_new_inbox_sub(sender)?;
-        self.publish(subject.as_ref(), payload, Some(inbox.clone()))?;
+        self.publish(subject.as_ref(), payload, Some(&inbox))?;
         let res = match receiver.recv_timeout(timeout) {
             Ok(msg) => Ok(msg.clone()),
             Err(e) => Err(err!(Timeout, "Request timeout expired: {}", e)),
@@ -156,14 +163,15 @@ impl Client {
     /// Asynchronously publish a message. This is a fire-and-forget style message and an `Ok`
     /// result here does not imply that interested parties have received the message, only that
     /// the message was successfully sent to NATS.
-    pub fn publish(&self, subject: &str, payload: &[u8], reply_to: Option<String>) -> Result<()> {
-        let pm = ProtocolMessage::Publish(PublishMessage {
+    pub fn publish(&self, subject: &str, payload: &[u8], reply_to: Option<&str>) -> Result<()> {
+        /*    let pm = ProtocolMessage::Publish(PublishMessage {
             payload: payload.to_vec(),
             payload_size: payload.len(),
             subject: subject.to_string(),
             reply_to,
-        });
-        match self.write_sender.send(pm) {
+        }); */
+        let vec = PublishMessage::as_vec(subject, reply_to, payload)?;
+        match self.write_sender.send(vec) {
             Ok(_) => Ok(()),
             Err(e) => Err(err!(ConcurrencyFailure, "Concurrency failure: {}", e)),
         }
@@ -175,6 +183,7 @@ impl Client {
             let server_info = &self.servers[self.server_index];
             (server_info.host.to_string(), server_info.port)
         };
+        info!("Connecting to {}:{}", host, port);
 
         let (s, r) = bounded(1); // Create a thread block until we send the CONNECT preamble
 
@@ -187,17 +196,23 @@ impl Client {
             self.opts.clone(),
             s,
         )?;
-        r.recv_timeout(std::time::Duration::from_millis(30))
-            .unwrap(); // TODO: handle "no connection sent within 30ms"
+        if let Err(_) = r.recv_timeout(Duration::from_millis(30)) {
+            error!("Failed to establish NATS connection within timeout");
+            return Err(err!(
+                Timeout,
+                "Failed to establish connection without timeout"
+            ));
+        };
 
         let mgr = self.submgr.clone();
         self.submgr.add_sub(
-            "_INBOX.>",
+            &self.inbox_wildcard, // _INBOX.(nuid).*
             None,
             Arc::new(move |msg| {
-                let sender = mgr.sender_for_inbox(&msg.subject);
-                sender.send(msg.clone())?;
-                mgr.remove_inbox(&msg.subject);
+                mgr.sender_for_inbox(&msg.subject).map(|sender| {
+                    sender.send(msg.clone()).unwrap(); // TODO: kill the unwrap
+                    mgr.remove_inbox(&msg.subject)
+                });
                 Ok(())
             }),
         )?;
@@ -218,7 +233,7 @@ impl Client {
                         (handler)(&msg).unwrap(); // TODO: handle this properly
                     }
                     Err(e) => {
-                        println!("Failed to receive message: {}", e); // TODO: handle this properly
+                        error!("Failed to receive message: {}", e); // TODO: handle this properly
                     }
                 }
             }
@@ -230,16 +245,23 @@ impl Client {
         self.submgr.handler_for_sid(sid).unwrap()
     }
 
-    fn raw_subscribe<T: Into<String> + Clone>(
+    fn raw_subscribe(
         &self,
-        subject: T,
-        queue_group: Option<String>,
+        subject: &str,
+        queue_group: Option<&str>,
         handler: MessageHandler,
     ) -> Result<()> {
         match self.submgr.add_sub(subject, queue_group, handler) {
             Ok(_) => Ok(()),
             Err(e) => Err(err!(SubscriptionFailure, "Subscription failure: {}", e)),
         }
+    }
+}
+
+impl Default for Client {
+    /// Creates a default client, using anonymous authentication and pointing to the localhost NATS server
+    fn default() -> Client {
+        Client::from_options(ClientOptions::default()).unwrap()
     }
 }
 

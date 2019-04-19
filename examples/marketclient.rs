@@ -25,20 +25,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.connect()?;
 
     client.subscribe("ticker", move |msg| {
-        let symbol: SymbolReply = serde_json::from_slice(msg.payload.as_slice()).unwrap();
+        let symbol: SymbolReply = serde_json::from_slice(&msg.payload).unwrap();
         info!("Received stock ticker: {:?}", symbol);
         Ok(())
     })?;
 
-    let reply = client
-        .request(
-            "symbolquery",
-            r#"{"symbol": "DOOM"}"#.as_bytes(),
-            Duration::from_millis(100),
-        )
-        .unwrap();
+    let reply = client.request(
+        "symbolquery",
+        r#"{"symbol": "DOOM"}"#.as_bytes(),
+        Duration::from_millis(100),
+    )?;
 
-    let symbol: SymbolReply = serde_json::from_slice(reply.payload.as_slice()).unwrap();
+    let symbol: SymbolReply = serde_json::from_slice(&reply.payload).unwrap();
     info!("Stock symbol response: {:?}", symbol);
 
     std::thread::park();

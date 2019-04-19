@@ -1,6 +1,6 @@
 [package]
 name = "natsclient"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Kevin Hoffman <alothien@gmail.com>"]
 description = "NATS client designed for both an ergonomic API and performance"
 edition = "2018"
@@ -25,6 +25,7 @@ nats-types = "0.1.7"
 data-encoding = "2.1.2"
 crossbeam-channel = "0.3.8"
 crossbeam = "0.7.1"
+crossbeam-utils = "^0.6.5"
 nuid = "0.2.0"
 log = "^0.4.6"
 

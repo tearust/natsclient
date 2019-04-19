@@ -7,7 +7,7 @@ extern crate log;
 
 use crate::protocol::ServerInfo;
 use crate::subs::SubscriptionManager;
-use crate::tcp::start_comms;
+use crate::tcp::TcpClient;
 use crossbeam_channel::{self as channel, bounded};
 use nats_types::{DeliveredMessage, PublishMessage};
 use std::{sync::Arc, thread, time::Duration};
@@ -38,6 +38,8 @@ type MessageHandler = Arc<Fn(&Message) -> Result<()> + Sync + Send>;
 pub struct ClientOptions {
     cluster_uris: Vec<String>,
     authentication: AuthenticationStyle,
+    connect_timeout: Duration,
+    reconnect_attempts: u8,
 }
 
 impl Default for ClientOptions {
@@ -45,6 +47,8 @@ impl Default for ClientOptions {
         ClientOptions {
             cluster_uris: Vec::new(),
             authentication: AuthenticationStyle::Anonymous,
+            connect_timeout: Duration::from_millis(100),
+            reconnect_attempts: 3,
         }
     }
 }
@@ -179,23 +183,19 @@ impl Client {
 
     /// Connect a client to the NATS server(s) indicated by previously supplied configuration
     pub fn connect(&self) -> Result<()> {
-        let (host, port) = {
-            let server_info = &self.servers[self.server_index];
-            (server_info.host.to_string(), server_info.port)
-        };
-        info!("Connecting to {}:{}", host, port);
-
         let (s, r) = bounded(1); // Create a thread block until we send the CONNECT preamble
 
-        start_comms(
-            &host,
-            port,
+        let tcp_client = TcpClient::new(
+            self.servers.clone(),
             self.delivery_sender.clone(),
             self.write_sender.clone(),
             self.write_receiver.clone(),
             self.opts.clone(),
             s,
-        )?;
+        );
+        tcp_client.connect()?;
+        info!("TCP connection established.");
+
         if let Err(_) = r.recv_timeout(Duration::from_millis(30)) {
             error!("Failed to establish NATS connection within timeout");
             return Err(err!(

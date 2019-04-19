@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match &msg.reply_to {
             Some(r) => {
                 info!("About to respond with reply...");
-                c.publish(&r, generate_symbol_reply(&msg.payload).as_slice(), None)?;
+                c.publish(&r, &generate_symbol_reply(&msg.payload), None)?;
             }
             None => info!("Nowhere to send symbol query response..."),
         };

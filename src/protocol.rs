@@ -111,7 +111,12 @@ impl ProtocolHandler {
     ) -> Result<()> {
         trace!("RECV: {}", pm);
         match pm {
-            ProtocolMessage::Info(_server_info) => {
+            ProtocolMessage::Info(server_info) => {
+                if let Some(urls) = &server_info.connect_urls {
+                    let server_urls = parse_server_uris(&urls)?;
+                    //TODO: dispatch these new URLs to the client for mutation
+                }
+
                 let conn = generate_connect_command(pm, &self.opts.authentication);
                 sender.send(conn.to_string().into_bytes())?;
             }
@@ -123,6 +128,7 @@ impl ProtocolHandler {
             }
             _ => {}
         };
+
         Ok(())
     }
 }

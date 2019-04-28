@@ -10,8 +10,9 @@ use crate::subs::SubscriptionManager;
 use crate::tcp::TcpClient;
 use crossbeam_channel::{self as channel, bounded};
 use nats_types::{DeliveredMessage, PublishMessage};
+use regex::Captures;
+use regex::Regex;
 use std::{sync::Arc, thread, time::Duration};
-
 pub type Result<T> = std::result::Result<T, crate::error::Error>;
 
 pub use nats_types::DeliveredMessage as Message;
@@ -28,6 +29,26 @@ pub enum AuthenticationStyle {
     /// Anonymous (unauthenticated)
     Anonymous,
 }
+
+impl AuthenticationStyle {
+    pub fn from_credsfile(file: &str) -> Result<AuthenticationStyle> {
+        let raw = std::fs::read_to_string(file)?;
+
+        Self::from_credsfile_str(&raw)
+    }
+
+    fn from_credsfile_str(raw: &str) -> Result<AuthenticationStyle> {
+        let re = Regex::new(CREDSFILE_FORMAT)?;
+
+        let caps: Vec<Captures> = re.captures_iter(&raw).collect();
+        let uc =
+            AuthenticationStyle::UserCredentials(caps[1][0].to_string(), caps[1][1].to_string());
+        Ok(uc)
+    }
+}
+
+const CREDSFILE_FORMAT: &'static str =
+    r#"\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}\n))"#;
 
 type MessageHandler = Arc<Fn(&Message) -> Result<()> + Sync + Send>;
 
@@ -279,6 +300,32 @@ mod tests {
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);
+    }
+
+    #[test]
+    fn credsfile_parses() {
+        let credsfile = r#"-----BEGIN NATS USER JWT-----
+eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJBNDNRN1NLT0tCT0tYUDc1WVhMWjcyVDZKNDVIVzJKR0ZRWUJFQ1I2VE1FWEZFN1RKSjVBIiwiaWF0IjoxNTU0ODk2OTQ1LCJpc3MiOiJBQU9KV0RRV1pPQkNFTUVWWUQ2VEhPTUVCSExYS0NBMzZGU0dJVUxINFBWRU1ORDVUMjNEUEM0VSIsIm5hbWUiOiJiZW1pc191c2VyIiwic3ViIjoiVUNMRkYzTFBLTTQ3WTZGNkQ3UExMVzU2MzZKU1JDUFhFUUFDTEdVWTZNT01BS1lXMkk2VUFFRUQiLCJ0eXBlIjoidXNlciIsIm5hdHMiOnsicHViIjp7fSwic3ViIjp7fX19.3aH-hCSTS8z8rg2km7Q_aat5VpwT-t9swSmh3bnVBY_9IV9wE9mjSOUgHE2sq-7pR4HTCpYa0RPrNcgNfaVuBg
+------END NATS USER JWT------
+
+************************* IMPORTANT *************************
+NKEY Seed printed below can be used to sign and prove identity.
+NKEYs are sensitive and should be treated as secrets.
+
+-----BEGIN USER NKEY SEED-----
+SUACGBWJZLVP4CHF7WTY65KT3I4QHAQ5DEZMFAJKTIUIRQPXE6DVMFQEUU
+------END USER NKEY SEED------
+
+*************************************************************"#;
+
+        let authstyle = AuthenticationStyle::from_credsfile_str(credsfile);
+        assert!(authstyle.is_ok());
+        if let AuthenticationStyle::UserCredentials(_jwt, seed) = authstyle.unwrap() {
+            assert_eq!(
+                "SUACGBWJZLVP4CHF7WTY65KT3I4QHAQ5DEZMFAJKTIUIRQPXE6DVMFQEUU",
+                seed
+            );
+        }
     }
 
     #[test]

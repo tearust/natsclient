@@ -42,6 +42,8 @@ pub enum ErrorKind {
     Timeout,
     /// Miscellaneous
     Miscellaneous,
+    /// Regular Expression
+    Regex,
 }
 
 /// A handy macro borrowed from the `signatory` crate that lets library-internal code generate
@@ -70,6 +72,7 @@ impl ErrorKind {
             ErrorKind::SubscriptionFailure => "Subscription Failure",
             ErrorKind::Timeout => "Timeout expired",
             ErrorKind::Miscellaneous => "Miscellaneous error",
+            ErrorKind::Regex => "Regular Expression pare failure",
         }
     }
 }
@@ -139,6 +142,12 @@ impl From<crossbeam_channel::SendError<DeliveredMessage>> for Error {
 impl From<crossbeam_channel::RecvTimeoutError> for Error {
     fn from(source: crossbeam_channel::RecvTimeoutError) -> Error {
         err!(Timeout, "Timeout expired: {}", source)
+    }
+}
+
+impl From<regex::Error> for Error {
+    fn from(source: regex::Error) -> Error {
+        err!(Regex, "Regular expression parse failure: {}", source)
     }
 }
 

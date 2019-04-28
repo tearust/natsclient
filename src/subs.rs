@@ -121,7 +121,7 @@ fn new_inbox(client_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::SubscriptionManager;
-    use crate::{Message, ProtocolMessage};
+    use crate::{protocol::ProtocolMessage, Message};
     use crossbeam_channel as channel;
     use nats_types::{SubscribeMessage, UnsubscribeMessage};
     use std::sync::Arc;

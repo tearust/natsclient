@@ -1,10 +1,10 @@
-use crate::protocol::{is_multiline_message, ProtocolHandler, ProtocolMessage, ServerInfo};
-use std::sync::{Arc, RwLock};
-
+use crate::protocol::{ProtocolHandler, ProtocolMessage, ServerInfo};
 use crate::ClientOptions;
 use crate::Result;
 use crossbeam_channel::{Receiver, Sender};
 use nats_types::DeliveredMessage;
+use std::io::Read;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -53,7 +53,6 @@ impl TcpClient {
         let write_sender = self.write_sender.clone();
         let write_receiver = self.write_receiver.clone();
         let connlatch = self.connlatch.clone();
-        let urls = self.connect_urls.clone();
 
         thread::spawn(move || {
             let mut line = String::new();
@@ -61,12 +60,25 @@ impl TcpClient {
             loop {
                 match buf_reader.read_line(&mut line) {
                     Ok(line_len) if line_len > 0 => {
-                        if is_multiline_message(&line) {
-                            let mut line2 = String::new();
-                            buf_reader.read_line(&mut line2).unwrap(); // TODO: kill this unwrap
-                            line.push_str(&line2);
-                        }
-                        let pm = ProtocolMessage::from_str(&line).unwrap(); // TODO: kill this unwrap
+                        let pm = if line.starts_with("MSG") {
+                            let msgheader = nats_types::parse_msg_header(&line).unwrap(); // TODO kill unwrap
+                            let mut buffer = vec![0; msgheader.message_len];
+                            buf_reader.read_exact(&mut buffer).unwrap(); // TODO kill unwrap
+
+                            buf_reader.read_line(&mut line).unwrap(); // purge the line feed
+
+                            ProtocolMessage::Message(DeliveredMessage {
+                                reply_to: msgheader.reply_to,
+                                payload_size: msgheader.message_len,
+                                payload: buffer,
+                                subject: msgheader.subject,
+                                subscription_id: msgheader.sid,
+                            })
+                        } else {
+                            ProtocolMessage::from_str(&line).unwrap() // TODO: kill this unwrap
+                        };
+
+                        line.clear();
                         ph.handle_protocol_message(&pm, &write_sender).unwrap();
                     }
                     Ok(_) => {}
@@ -74,7 +86,6 @@ impl TcpClient {
                         error!("Error receiving data: {}", e);
                     }
                 }
-                line.clear();
             }
         });
 
@@ -112,58 +123,6 @@ impl TcpClient {
         Err(err!(IOError, "Failed to establish TCP connection"))
     }
 }
-/*
-pub(crate) fn start_comms(
-    host: &str,
-    port: u16,
-    delivery_sender: channel::Sender<DeliveredMessage>,
-    write_sender: channel::Sender<Vec<u8>>,
-    write_receiver: channel::Receiver<Vec<u8>>,
-    opts: ClientOptions,
-    s: crossbeam_channel::Sender<bool>,
-) -> Result<()> {
-    let stream_reader = TcpStream::connect((host.as_ref(), port))?;
-    let mut stream_writer = stream_reader.try_clone()?;
-    let mut buf_reader = BufReader::new(stream_reader);
-
-    thread::spawn(move || {
-        let mut line = String::new();
-        let ph = ProtocolHandler::new(opts, delivery_sender);
-        loop {
-            match buf_reader.read_line(&mut line) {
-                Ok(line_len) if line_len > 0 => {
-                    if is_multiline_message(&line) {
-                        let mut line2 = String::new();
-                        buf_reader.read_line(&mut line2).unwrap(); // TODO: kill this unwrap
-                        line.push_str(&line2);
-                    }
-                    let pm = ProtocolMessage::from_str(&line).unwrap(); // TODO: kill this unwrap
-                    ph.handle_protocol_message(&pm, &write_sender).unwrap();
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Error receiving data: {}", e);
-                }
-            }
-            line.clear();
-        }
-    });
-
-    thread::spawn(move || loop {
-        let vec = write_receiver.recv().unwrap();
-        match stream_writer.write_all(&vec) {
-            Ok(_) => {
-                trace!("SEND {} bytes", vec.len());
-                if starts_with(&vec, b"CONNECT") {
-                    s.send(true).unwrap();
-                }
-            }
-            Err(e) => error!("Failed to write buffer: {}", e), // TODO: we get this when we've been disconnected
-        };
-    });
-
-    Ok(())
-} */
 
 fn starts_with(haystack: &[u8], needle: &[u8]) -> bool {
     let pos = haystack

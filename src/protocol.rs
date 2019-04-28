@@ -57,34 +57,52 @@ pub(crate) fn generate_connect_command(
     info: &ProtocolMessage,
     auth: &AuthenticationStyle,
 ) -> ProtocolMessage {
-    if let AuthenticationStyle::UserCredentials(jwt, seed) = auth {
+    let mut user: Option<String> = None;
+    let mut pass: Option<String> = None;
+    let mut auth_token: Option<String> = None;
+    let mut jwt: Option<String> = None;
+    let mut sig: Option<String> = None;
+
+    if let AuthenticationStyle::UserCredentials(injwt, seed) = auth {
         if let ProtocolMessage::Info(ref server_info) = info {
             let kp = KeyPair::from_seed(seed.as_ref()).unwrap();
             let nonce = server_info.nonce.clone().unwrap();
             let sigbytes = kp.sign(nonce.as_bytes()).unwrap();
-            let sig = Some(data_encoding::BASE64URL_NOPAD.encode(&sigbytes));
-
-            let ci = crate::protocol::ConnectionInformation::new(
-                false,
-                false,
-                false,
-                None,
-                None,
-                None,
-                "en-us".to_string(),
-                "natsclient-rust".to_string(),
-                "0.0.1".to_string(),
-                Some(1),
-                sig,
-                Some(jwt.to_string()),
-            );
-            ProtocolMessage::Connect(ci)
+            sig = Some(data_encoding::BASE64URL_NOPAD.encode(&sigbytes));
+            jwt = Some(injwt.to_string());
         } else {
-            panic!("No server information");
+            panic!("No server information!");
         }
-    } else {
-        panic!("currently unsupported authentication method");
     }
+
+    if let AuthenticationStyle::Basic {
+        username: uname,
+        password: pwd,
+    } = auth
+    {
+        user = Some(uname.to_string());
+        pass = Some(pwd.to_string());
+    }
+
+    if let AuthenticationStyle::Token(tok) = auth {
+        auth_token = Some(tok.to_string());
+    }
+
+    let ci = crate::protocol::ConnectionInformation::new(
+        false,
+        false,
+        false,
+        auth_token,
+        user,
+        pass,
+        "en-us".to_string(),
+        "natsclient-rust".to_string(),
+        "0.0.1".to_string(),
+        Some(1),
+        sig,
+        jwt,
+    );
+    ProtocolMessage::Connect(ci)
 }
 
 #[derive(Debug, Clone)]
@@ -109,15 +127,14 @@ impl ProtocolHandler {
         pm: &ProtocolMessage,
         sender: &channel::Sender<Vec<u8>>,
     ) -> Result<()> {
-        trace!("RECV: {}", pm);
         match pm {
             ProtocolMessage::Info(server_info) => {
                 if let Some(urls) = &server_info.connect_urls {
-                    let server_urls = parse_server_uris(&urls)?;
+                    let _server_urls = parse_server_uris(&urls)?;
                     //TODO: dispatch these new URLs to the client for mutation
                 }
 
-                let conn = generate_connect_command(pm, &self.opts.authentication);
+                let conn = generate_connect_command(pm, &self.opts.authentication); // TODO: once accepting URL updates, only send connect once
                 sender.send(conn.to_string().into_bytes())?;
             }
             ProtocolMessage::Ping => {

@@ -1,6 +1,6 @@
 [package]
 name = "natsclient"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Kevin Hoffman <alothien@gmail.com>"]
 description = "NATS client designed for both an ergonomic API and performance"
 edition = "2018"

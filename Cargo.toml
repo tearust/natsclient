@@ -17,7 +17,7 @@ categories = ["network-programming", "api-bindings"]
 
 [dependencies]
 derive_builder = "^0.7"
-nkeys = "0.0.4"
+nkeys = "0.0.6"
 url = "1.7"
 rand = "0.6.5"
 nats-types = "0.1.8"

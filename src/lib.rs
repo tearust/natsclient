@@ -217,7 +217,7 @@ impl Client {
         tcp_client.connect()?;
         info!("TCP connection established.");
 
-        if let Err(_) = r.recv_timeout(Duration::from_millis(30)) {
+        if let Err(_) = r.recv_timeout(self.opts.connect_timeout) {
             error!("Failed to establish NATS connection within timeout");
             return Err(err!(
                 Timeout,

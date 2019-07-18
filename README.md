@@ -1,3 +1,7 @@
+![travis](https://travis-ci.org/encabulators/natsclient.svg?branch=master)&nbsp;
+![license](https://img.shields.io/github/license/encabulators/natsclient.svg)
+
+
 # NATS Client
 A simple, developer-friendly NATS client designed with an ergonomic API designed to allow you to use this client anywhere, whether you're using `tokio` or single-threaded apps or traditional multi-threaded.
 

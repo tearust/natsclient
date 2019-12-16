@@ -62,7 +62,7 @@ macro_rules! err {
 }
 
 impl ErrorKind {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             ErrorKind::InvalidUriScheme => "Invalid URI scheme",
             ErrorKind::UriParseFailure => "URI parse failure",

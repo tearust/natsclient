@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-type MessageHandler = Arc<Fn(&Message) -> Result<()> + Sync + Send>;
+type MessageHandler = Arc<dyn Fn(&Message) -> Result<()> + Sync + Send>;
 
 const NUID_LENGTH: usize = 22;
 const INBOX_PREFIX: &'static str = "_INBOX.";

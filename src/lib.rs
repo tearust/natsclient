@@ -47,10 +47,10 @@ impl AuthenticationStyle {
     }
 }
 
-const CREDSFILE_FORMAT: &'static str =
+const CREDSFILE_FORMAT: &str =
     r#"\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}\n))"#;
 
-type MessageHandler = Arc<Fn(&Message) -> Result<()> + Sync + Send>;
+type MessageHandler = Arc<dyn Fn(&Message) -> Result<()> + Sync + Send>;
 
 /// Options to configure the NATS client. A builder is available so a fluent
 /// API can be used to set options
@@ -154,7 +154,7 @@ impl Client {
         F: Fn(&Message) -> Result<()> + Sync + Send,
         F: 'static,
     {
-        self.raw_subscribe(subject, Some(queue_group.into()), Arc::new(handler))
+        self.raw_subscribe(subject, Some(queue_group), Arc::new(handler))
     }
 
     /// Perform a synchronous request by publishing a message on the given subject and waiting
@@ -172,11 +172,10 @@ impl Client {
         let (sender, receiver) = channel::bounded(1);
         let inbox = self.submgr.add_new_inbox_sub(sender)?;
         self.publish(subject.as_ref(), payload, Some(&inbox))?;
-        let res = match receiver.recv_timeout(timeout) {
+        match receiver.recv_timeout(timeout) {
             Ok(msg) => Ok(msg.clone()),
             Err(e) => Err(err!(Timeout, "Request timeout expired: {}", e)),
-        };
-        res
+        }
     }
 
     /// Unsubscribe from a subject or wildcard
@@ -217,7 +216,7 @@ impl Client {
         tcp_client.connect()?;
         info!("TCP connection established.");
 
-        if let Err(_) = r.recv_timeout(self.opts.connect_timeout) {
+        if r.recv_timeout(self.opts.connect_timeout).is_err() {
             error!("Failed to establish NATS connection within timeout");
             return Err(err!(
                 Timeout,
@@ -230,10 +229,10 @@ impl Client {
             &self.inbox_wildcard, // _INBOX.(nuid).*
             None,
             Arc::new(move |msg| {
-                mgr.sender_for_inbox(&msg.subject).map(|sender| {
+                if let Some(sender) = mgr.sender_for_inbox(&msg.subject) {
                     sender.send(msg.clone()).unwrap(); // TODO: kill the unwrap
                     mgr.remove_inbox(&msg.subject)
-                });
+                }
                 Ok(())
             }),
         )?;
@@ -294,8 +293,7 @@ mod tcp;
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthenticationStyle, Client, ClientOptions};
-    use std::time::Duration;
+    use super::AuthenticationStyle;
 
     #[test]
     fn it_works() {
